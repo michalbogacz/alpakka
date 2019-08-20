@@ -4,17 +4,12 @@
 
 package akka.stream.alpakka.dynamodb
 
-import java.net.URI
-
 import akka.actor.ActorSystem
 import akka.stream.ActorMaterializer
 import akka.stream.alpakka.dynamodb.scaladsl.DynamoDb
 import akka.stream.testkit.scaladsl.StreamTestKit.assertAllStagesStopped
 import akka.testkit.TestKit
 import org.scalatest.{AsyncWordSpecLike, BeforeAndAfterAll, Matchers}
-import software.amazon.awssdk.auth.credentials.{AwsBasicCredentials, StaticCredentialsProvider}
-import software.amazon.awssdk.regions.Region
-import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 
 import scala.collection.JavaConverters._
 
@@ -23,17 +18,9 @@ class TableSpec extends TestKit(ActorSystem("TableSpec")) with AsyncWordSpecLike
   implicit val materializer = ActorMaterializer()
   implicit val ec = system.dispatcher
 
-  implicit val client: DynamoDbAsyncClient = DynamoDbAsyncClient
-    .builder()
-    .region(Region.AWS_GLOBAL)
-    .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("x", "x")))
-    .endpointOverride(new URI("http://localhost:8001/"))
-    .build()
-
-  override def afterAll(): Unit = {
-    client.close()
-    shutdown()
-    super.afterAll()
+  override def beforeAll() = {
+    System.setProperty("aws.accessKeyId", "someKeyId")
+    System.setProperty("aws.secretKey", "someSecretKey")
   }
 
   "DynamoDB" should {
@@ -41,43 +28,39 @@ class TableSpec extends TestKit(ActorSystem("TableSpec")) with AsyncWordSpecLike
     import TableSpecOps._
 
     "1) create table" in assertAllStagesStopped {
-      DynamoDb.single(createTableRequest).map(_.tableDescription.tableName shouldBe tableName)
+      DynamoDb.single(createTableRequest).map(_.getTableDescription.getTableName shouldEqual tableName)
     }
 
     "2) list tables" in assertAllStagesStopped {
-      DynamoDb.single(listTablesRequest).map(_.tableNames.asScala should contain(tableName))
+      DynamoDb.single(listTablesRequest).map(_.getTableNames.asScala.count(_ == tableName) shouldEqual 1)
     }
 
     "3) describe table" in assertAllStagesStopped {
-      DynamoDb.single(describeTableRequest).map(_.table.tableName shouldBe tableName)
+      DynamoDb.single(describeTableRequest).map(_.getTable.getTableName shouldEqual tableName)
     }
 
     "4) update table" in assertAllStagesStopped {
-      for {
-        describe <- DynamoDb.single(describeTableRequest)
-        update <- DynamoDb.single(updateTableRequest)
-      } yield {
-        describe.table.provisionedThroughput.writeCapacityUnits shouldBe 10L
-        update.tableDescription.provisionedThroughput.writeCapacityUnits shouldBe newMaxLimit
-      }
+      DynamoDb
+        .single(describeTableRequest)
+        .map(_.getTable.getProvisionedThroughput.getWriteCapacityUnits shouldEqual 10L)
+        .flatMap(_ => DynamoDb.single(updateTableRequest))
+        .map(_.getTableDescription.getProvisionedThroughput.getWriteCapacityUnits shouldEqual newMaxLimit)
     }
 
     // TODO: Enable this test when DynamoDB Local supports TTLs
     "5) update time to live" ignore assertAllStagesStopped {
-      for {
-        describe <- DynamoDb.single(describeTimeToLiveRequest)
-        update <- DynamoDb.single(updateTimeToLiveRequest)
-      } yield {
-        describe.timeToLiveDescription.attributeName shouldBe empty
-        update.timeToLiveSpecification.attributeName shouldBe "expires"
-      }
+      DynamoDb
+        .single(describeTimeToLiveRequest)
+        .map(_.getTimeToLiveDescription.getAttributeName shouldEqual null)
+        .flatMap(_ => DynamoDb.single(updateTimeToLiveRequest))
+        .map(_.getTimeToLiveSpecification.getAttributeName shouldEqual "expires")
     }
 
     "6) delete table" in assertAllStagesStopped {
-      for {
-        _ <- DynamoDb.single(deleteTableRequest)
-        list <- DynamoDb.single(listTablesRequest)
-      } yield list.tableNames.asScala should not contain (tableName)
+      DynamoDb
+        .single(deleteTableRequest)
+        .flatMap(_ => DynamoDb.single(listTablesRequest))
+        .map(_.getTableNames.asScala.count(_ == tableName) shouldEqual 0)
     }
 
   }
