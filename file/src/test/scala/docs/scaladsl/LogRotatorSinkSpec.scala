@@ -4,6 +4,7 @@
 
 package docs.scaladsl
 
+import java.nio.channels.NonWritableChannelException
 import java.nio.file._
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
